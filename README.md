@@ -1,76 +1,77 @@
-# Blogger SEO + GEO + AEO Agent
+# Blogger SEO + GEO + AEO Agent (v2 — full SEO suite)
 
-Yeh agent aapki Blogger site (documentconvertfree.blogspot.com) ke har post ko
-har hafte automatically audit + fix karta hai. GitHub Actions pe free chalta
-hai (public repo = unlimited free minutes).
+Yeh agent aapki Blogger site ke har post ko har hafte automatically audit +
+fix karta hai, **aur ab real Google data bhi use karta hai** — sirf guessing
+nahi, asal traffic/ranking ke hisab se decide karta hai kaunsi post pehle
+theek karni hai.
 
-## Kya karta hai
+## Kya naya hai (v2)
 
-1. **Audit** — har post ka Technical SEO, Content Depth, GEO Readiness, Trust
-   score (0-100).
-2. **Auto-fix** (agar zaroorat ho):
-   - Missing/lambi meta description theek karta hai
-   - Missing labels/tags add karta hai
-   - Images pe missing `alt` text add karta hai
-   - FAQPage schema (JSON-LD) inject karta hai — AI answer engines (ChatGPT,
-     AI Overviews) isko directly quote kar sakte hain
-   - Post ke start mein ek "Quick answer" TL;DR paragraph add karta hai (AEO)
-3. **Report** — `reports/` folder mein JSON + Markdown report save + commit
-   hoti hai, taake history dekh sakein.
+1. **Google Search Console** — har post ke real clicks, impressions, CTR,
+   average ranking position (pichle 28 din ka data)
+2. **Google PageSpeed Insights** — Core Web Vitals (LCP, CLS, TBT) + speed
+   score, free Google API se
+3. **Broken link checker** — har post ke internal/external links check
+   karta hai, dead links flag karta hai
+4. **Priority score** — in sab cheezon ko mila kar decide karta hai kaunsi
+   post sabse zyada dhyan maangti hai (report mein sabse upar dikhegi)
 
-## Setup (ek dafa karna hai)
+Purana on-page audit (title, meta, headings, alt text, schema, FAQ, TL;DR)
+bhi waisa hi chalta rahega.
 
-### 1. Naya GitHub repo banayein
-Yeh poora folder GitHub pe push karein (public repo rakhein taake Actions
-free ho — private repo bhi free hai kam usage ke liye).
+## Naya Setup (in cheezon ke liye)
 
-### 2. Blogger Blog ID nikalein
-Blogger dashboard -> Settings -> "Blog ID" wahan mil jayega. Ya URL se:
-`https://www.blogger.com/blog/posts/<BLOG_ID>`
+### 1. Search Console mein site verify karein (agar pehle se nahi hai)
+1. https://search.google.com/search-console/ pe jayein
+2. "documentconvertfree.blogspot.com" add/verify karein (Blogger sites
+   usually HTML tag ya DNS se verify hoti hain — dashboard instructions
+   follow karein)
 
-### 3. Google Cloud OAuth setup (aapke YouTube agent jaisa hi)
-1. https://console.cloud.google.com/ -> apna existing project use karein
-   (`tidal-vim-465701-d6`) ya naya banayein.
-2. "APIs & Services" -> "Enable APIs" -> **Blogger API v3** enable karein.
-3. "Credentials" -> "Create Credentials" -> "OAuth client ID" -> "Desktop app"
-   -> download karein, naam `client_secret.json` rakh dein.
+### 2. Google Cloud pe Search Console API enable karein
+1. https://console.cloud.google.com/apis/library/searchconsole.googleapis.com
+2. Apna existing project select karein → **Enable**
 
-### 4. Apne PC pe token generate karein (ek dafa)
+### 3. Naya token generate karein (purana kaam nahi karega — naya scope chahiye)
 ```
-pip install google-auth-oauthlib google-api-python-client
 python get_token.py
 ```
-Browser khulega, apni Google account se login karein (jo Blogger site
-manage karti hai), approve karein. Terminal mein ek JSON blob print hoga —
-poora copy kar lein.
+Browser khulega, login karein, is dafa **2 permissions** manegi (Blogger +
+Search Console) — dono allow karein. Naya JSON print hoga.
 
-### 5. GitHub Secrets add karein
-Repo -> Settings -> Secrets and variables -> Actions -> New repository secret:
-
+### 4. GitHub Secrets update/add karein
 | Secret name | Value |
 |---|---|
-| `BLOGGER_BLOG_ID` | Step 2 wala Blog ID |
-| `GOOGLE_TOKEN` | Step 4 wala poora JSON blob |
-| `GEMINI_API_KEY` | (optional) aapki free Gemini key — behtar auto-written meta descriptions/FAQs ke liye |
+| `GOOGLE_TOKEN` | (update karein) naya JSON jo abhi generate hua |
+| `SITE_URL` | `https://documentconvertfree.blogspot.com/` (Search Console mein jo property URL hai, bilkul wahi likhein — trailing slash sameet) |
+| `PAGESPEED_API_KEY` | (optional lekin recommended) — free key yahan se banayein: https://console.cloud.google.com/apis/credentials → "Create Credentials" → "API key" → us key ko "PageSpeed Insights API" tak restrict kar dein |
 
-### 6. Test karein
-GitHub repo -> "Actions" tab -> "SEO GEO AEO Agent" workflow -> "Run workflow"
--> pehle `dry_run = true` rakh ke test karein (koi changes nahi hongi, sirf
-report banegi). Theek lage to `dry_run = false` karke dobara chalayein.
+### 5. (Optional) Features on/off karein
+Workflow file (`.github/workflows/seo-agent.yml`) mein yeh env vars already
+hain, agar koi feature band karni ho to secrets ki jagah seedha workflow
+file mein `"false"` likh dein:
+- `ENABLE_GSC` — Search Console data (default: true)
+- `ENABLE_PAGESPEED` — page speed check (default: true)
+- `ENABLE_BROKEN_LINKS` — broken link check (default: true)
 
-Iske baad yeh har Monday automatically chalta rahega.
+## Test karein
+Actions tab → "SEO GEO AEO Agent" → "Run workflow" → `dry_run = true` se
+pehle test karein. Report (`reports/` folder) mein ab priority score, GSC
+data, PageSpeed score, aur broken links bhi dikhengi.
+
+## Ab bhi kya nahi karta (limitations)
+- **Google Analytics** abhi shamil nahi hai (Search Console traffic/ranking
+  data deta hai jo zyada directly SEO se juda hai; Analytics add karna
+  agla step ho sakta hai agar chahiye)
+- Content ko full rewrite nahi karta — sirf TL;DR + FAQ add karta hai,
+  taake original content safe rahe
+- Broken link checker sirf HTTP status check karta hai (404, 500 waghera),
+  content ki quality ya redirect chains deep analyze nahi karta
+- PageSpeed API free tier: bina key ke rate-limited hai; key se better hai
 
 ## Files
-- `seo_agent.py` — main agent (audit + auto-fix + report)
-- `audit_core.py` — scoring engine (Technical/Content/GEO/Trust)
-- `get_token.py` — one-time local OAuth helper
+- `seo_agent.py` — main agent
+- `audit_core.py` — on-page scoring engine
+- `performance_data.py` — Search Console + PageSpeed + broken links (naya)
+- `get_token.py` — OAuth token generator (ab dono scopes ke sath)
 - `.github/workflows/seo-agent.yml` — weekly scheduled run
 - `requirements.txt` — Python dependencies
-
-## Limitations
-- Yeh sirf on-page signals check karta hai (title, meta, headings, alt text,
-  schema). Backlinks, Core Web Vitals/page speed, ya Search Console rankings
-  check nahi karta.
-- Content-level rewriting minimal rakha gaya hai (sirf TL;DR + FAQ add hota
-  hai) taake aapka original content safe rahe — full paragraphs khud nahi
-  badalta.

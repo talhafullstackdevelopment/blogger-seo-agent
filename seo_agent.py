@@ -37,30 +37,51 @@ import datetime
 from pathlib import Path
 
 from audit_core import analyze_html, recommendations, fetch as fetch_url
+from performance_data import (
+    get_search_console_service,
+    get_gsc_data_for_url,
+    get_pagespeed_data,
+    find_broken_links,
+    compute_priority_score,
+)
 
 REPORTS_DIR = Path("reports")
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
+SITE_URL = os.environ.get("SITE_URL", "")  # e.g. https://documentconvertfree.blogspot.com/
+PAGESPEED_API_KEY = os.environ.get("PAGESPEED_API_KEY", "")
+ENABLE_PAGESPEED = os.environ.get("ENABLE_PAGESPEED", "true").lower() == "true"
+ENABLE_GSC = os.environ.get("ENABLE_GSC", "true").lower() == "true"
+ENABLE_BROKEN_LINKS = os.environ.get("ENABLE_BROKEN_LINKS", "true").lower() == "true"
 
 
 # ---------------------------------------------------------------------------
 # Blogger API auth + client
 # ---------------------------------------------------------------------------
 
-def get_blogger_service():
+def get_credentials():
+    """Shared OAuth creds for Blogger + Search Console. The token JSON must
+    have been generated with BOTH scopes (see get_token.py)."""
     from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
 
     token_json = os.environ["GOOGLE_TOKEN"]
     creds_info = json.loads(token_json)
     creds = Credentials.from_authorized_user_info(
         creds_info,
-        scopes=["https://www.googleapis.com/auth/blogger"],
+        scopes=[
+            "https://www.googleapis.com/auth/blogger",
+            "https://www.googleapis.com/auth/webmasters.readonly",
+        ],
     )
 
     if creds.expired and creds.refresh_token:
         from google.auth.transport.requests import Request
         creds.refresh(Request())
 
+    return creds
+
+
+def get_blogger_service(creds):
+    from googleapiclient.discovery import build
     return build("blogger", "v3", credentials=creds)
 
 
@@ -194,7 +215,7 @@ def build_quick_answer_block(title, content_html):
 # Per-post pipeline
 # ---------------------------------------------------------------------------
 
-def audit_and_fix_post(service, blog_id, post):
+def audit_and_fix_post(service, blog_id, post, gsc_service=None):
     url = post["url"]
     title = post["title"]
     post_id = post["id"]
@@ -210,6 +231,30 @@ def audit_and_fix_post(service, blog_id, post):
 
     report_before = analyze_html(live_html, url)
     recs = recommendations(report_before)
+
+    # --- Real performance data (Search Console / PageSpeed / broken links) ---
+    gsc_data = {"clicks": 0, "impressions": 0, "ctr": 0.0, "position": None, "has_data": False}
+    if ENABLE_GSC and gsc_service and SITE_URL:
+        gsc_data = get_gsc_data_for_url(gsc_service, SITE_URL, url)
+        print(f"  [gsc] clicks={gsc_data['clicks']} impressions={gsc_data['impressions']} "
+              f"position={gsc_data['position']}")
+
+    pagespeed_data = None
+    if ENABLE_PAGESPEED:
+        pagespeed_data = get_pagespeed_data(url, api_key=PAGESPEED_API_KEY or None)
+        if pagespeed_data:
+            print(f"  [pagespeed] score={pagespeed_data['performance_score']} "
+                  f"LCP={pagespeed_data['lcp']} CLS={pagespeed_data['cls']}")
+
+    broken_links = {"total_checked": 0, "broken": [], "broken_count": 0}
+    if ENABLE_BROKEN_LINKS:
+        broken_links = find_broken_links(live_html)
+        if broken_links["broken_count"]:
+            print(f"  [links] {broken_links['broken_count']} broken link(s) found")
+
+    priority_score = compute_priority_score(
+        report_before["scores"], gsc_data, pagespeed_data or {}, broken_links
+    )
 
     fixes_applied = []
     new_content = content_html
@@ -268,6 +313,10 @@ def audit_and_fix_post(service, blog_id, post):
         "recommendations": recs,
         "fixes_applied": fixes_applied,
         "dry_run": DRY_RUN,
+        "search_console": gsc_data,
+        "pagespeed": pagespeed_data,
+        "broken_links": broken_links,
+        "priority_score": priority_score,
     }
 
 
@@ -277,7 +326,17 @@ def audit_and_fix_post(service, blog_id, post):
 
 def main():
     blog_id = os.environ["BLOGGER_BLOG_ID"]
-    service = get_blogger_service()
+    creds = get_credentials()
+    service = get_blogger_service(creds)
+
+    gsc_service = None
+    if ENABLE_GSC and SITE_URL:
+        try:
+            gsc_service = get_search_console_service(creds)
+        except Exception as e:
+            print(f"[warn] Search Console unavailable, continuing without it: {e}")
+    elif ENABLE_GSC and not SITE_URL:
+        print("[warn] ENABLE_GSC is true but SITE_URL is not set -- skipping Search Console data")
 
     posts = list_all_posts(service, blog_id)
     print(f"Found {len(posts)} live posts on blog {blog_id}")
@@ -285,9 +344,12 @@ def main():
     results = []
     for post in posts:
         try:
-            results.append(audit_and_fix_post(service, blog_id, post))
+            results.append(audit_and_fix_post(service, blog_id, post, gsc_service=gsc_service))
         except Exception as e:
             print(f"[error] skipping post {post.get('url')}: {e}")
+
+    # Highest priority (most worth fixing) first
+    results.sort(key=lambda r: r.get("priority_score", 0), reverse=True)
 
     REPORTS_DIR.mkdir(exist_ok=True)
     stamp = datetime.datetime.utcnow().strftime("%Y-%m-%d_%H%M")
@@ -297,15 +359,38 @@ def main():
     json_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
     lines = [f"# SEO/GEO/AEO Agent Report — {stamp} UTC", ""]
+    lines.append("Posts below are sorted by **priority score** (highest = most worth fixing).")
+    lines.append("")
     for r in results:
         s = r["scores_before"]
-        lines.append(f"## {r['title']}")
+        gsc = r.get("search_console") or {}
+        ps = r.get("pagespeed") or {}
+        links = r.get("broken_links") or {}
+        lines.append(f"## {r['title']}  (priority: {r.get('priority_score', 'n/a')})")
         lines.append(f"[{r['url']}]({r['url']})")
         lines.append("")
         lines.append(
-            f"- Overall: **{s['overall']}** | Technical SEO: {s['technical_seo']} | "
+            f"- On-page: Overall **{s['overall']}** | Technical: {s['technical_seo']} | "
             f"Content: {s['content_depth']} | GEO: {s['geo_readiness']} | Trust: {s['trust_authority']}"
         )
+        if gsc.get("has_data"):
+            lines.append(
+                f"- Search Console (28d): {gsc['clicks']} clicks | {gsc['impressions']} impressions | "
+                f"{gsc['ctr']}% CTR | avg position {gsc['position']}"
+            )
+        else:
+            lines.append("- Search Console: no data yet (new or very low-traffic page)")
+        if ps:
+            lines.append(
+                f"- PageSpeed (mobile): score {ps.get('performance_score', 'n/a')} | "
+                f"LCP {ps.get('lcp', 'n/a')} | CLS {ps.get('cls', 'n/a')} | TBT {ps.get('inp_or_tbt', 'n/a')}"
+            )
+        if links.get("total_checked"):
+            status = f"{links['broken_count']} broken" if links["broken_count"] else "all OK"
+            lines.append(f"- Links checked: {links['total_checked']} ({status})")
+            if links["broken"]:
+                for b in links["broken"]:
+                    lines.append(f"  - broken: {b}")
         lines.append(f"- Fixes applied: {r['fixes_applied'] or 'none'}")
         lines.append(f"- Remaining recommendations: {r['recommendations']}")
         lines.append("")
