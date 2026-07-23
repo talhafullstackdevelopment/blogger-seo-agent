@@ -87,7 +87,7 @@ def get_blogger_service(creds):
 
 def list_all_posts(service, blog_id):
     posts = []
-    request = service.posts().list(blogId=blog_id, fetchBodies=True, maxResults=500, status="live")
+    request = service.posts().list(blogId=blog_id, fetchBodies=True, maxResults=500, status="LIVE")
     while request is not None:
         response = request.execute()
         posts.extend(response.get("items", []))
